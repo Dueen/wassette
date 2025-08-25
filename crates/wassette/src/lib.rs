@@ -167,7 +167,7 @@ impl LifecycleManager {
     pub async fn new(plugin_dir: impl AsRef<Path>) -> Result<Self> {
         // Use default secrets directory for backward compatibility
         let default_secrets_dir = get_default_secrets_dir();
-        
+
         Self::new_with_config(
             plugin_dir,
             HashMap::new(), // Empty environment variables for backward compatibility
@@ -186,7 +186,7 @@ impl LifecycleManager {
     ) -> Result<Self> {
         // Use default secrets directory
         let default_secrets_dir = get_default_secrets_dir();
-        
+
         Self::new_with_config(
             plugin_dir,
             environment_vars,
@@ -226,7 +226,7 @@ impl LifecycleManager {
     ) -> Result<Self> {
         // Use default secrets directory for backward compatibility
         let default_secrets_dir = get_default_secrets_dir();
-        
+
         Self::new_with_policy(
             plugin_dir,
             environment_vars,
@@ -256,7 +256,7 @@ impl LifecycleManager {
         config.wasm_component_model(true);
         config.async_support(true);
         let engine = Arc::new(wasmtime::Engine::new(&config)?);
-        
+
         info!("Creating new LifecycleManager");
 
         let mut registry = ComponentRegistry::new();
@@ -730,23 +730,46 @@ impl LifecycleManager {
     }
 
     /// List secrets for a component
-    pub async fn list_component_secrets(&self, component_id: &str, show_values: bool) -> Result<std::collections::HashMap<String, Option<String>>> {
-        self.secrets_manager.list_component_secrets(component_id, show_values).await
+    pub async fn list_component_secrets(
+        &self,
+        component_id: &str,
+        show_values: bool,
+    ) -> Result<std::collections::HashMap<String, Option<String>>> {
+        self.secrets_manager
+            .list_component_secrets(component_id, show_values)
+            .await
     }
 
     /// Set secrets for a component
-    pub async fn set_component_secrets(&self, component_id: &str, secrets: &[(String, String)]) -> Result<()> {
-        self.secrets_manager.set_component_secrets(component_id, secrets).await
+    pub async fn set_component_secrets(
+        &self,
+        component_id: &str,
+        secrets: &[(String, String)],
+    ) -> Result<()> {
+        self.secrets_manager
+            .set_component_secrets(component_id, secrets)
+            .await
     }
 
     /// Delete secrets for a component
-    pub async fn delete_component_secrets(&self, component_id: &str, keys: &[String]) -> Result<()> {
-        self.secrets_manager.delete_component_secrets(component_id, keys).await
+    pub async fn delete_component_secrets(
+        &self,
+        component_id: &str,
+        keys: &[String],
+    ) -> Result<()> {
+        self.secrets_manager
+            .delete_component_secrets(component_id, keys)
+            .await
     }
 
     /// Load secrets for a component as environment variables
-    pub async fn load_component_secrets(&self, component_id: &str) -> Result<std::collections::HashMap<String, String>> {
-        self.secrets_manager.load_component_secrets(component_id).await
+    pub async fn load_component_secrets(
+        &self,
+        component_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        self.secrets_manager
+            .load_component_secrets(component_id)
+            .await
     }
 }
 
@@ -1125,7 +1148,8 @@ permissions:
 
         let temp_dir = tempfile::tempdir()?;
         let env_vars = HashMap::new(); // Empty environment for test
-        let template = create_wasi_state_template_from_policy(&policy, temp_dir.path(), &env_vars, None)?;
+        let template =
+            create_wasi_state_template_from_policy(&policy, temp_dir.path(), &env_vars, None)?;
 
         assert_eq!(template.allowed_hosts.len(), 2);
         assert!(template.allowed_hosts.contains("api.example.com"));

@@ -272,12 +272,13 @@ async fn create_lifecycle_manager(plugin_dir: Option<PathBuf>) -> Result<Lifecyc
     };
 
     LifecycleManager::new_with_config(
-        &config.plugin_dir, 
+        &config.plugin_dir,
         config.environment_vars,
         &config.secrets_dir,
         oci_client::Client::default(),
-        reqwest::Client::default()
-    ).await
+        reqwest::Client::default(),
+    )
+    .await
 }
 
 impl McpServer {
@@ -476,15 +477,14 @@ async fn main() -> Result<()> {
                 let config =
                     config::Config::from_serve(cfg).context("Failed to load configuration")?;
 
-                let lifecycle_manager =
-                    LifecycleManager::new_with_config(
-                        &config.plugin_dir, 
-                        config.environment_vars,
-                        &config.secrets_dir,
-                        oci_client::Client::default(),
-                        reqwest::Client::default()
-                    )
-                        .await?;
+                let lifecycle_manager = LifecycleManager::new_with_config(
+                    &config.plugin_dir,
+                    config.environment_vars,
+                    &config.secrets_dir,
+                    oci_client::Client::default(),
+                    reqwest::Client::default(),
+                )
+                .await?;
 
                 let server = McpServer::new(lifecycle_manager);
 
@@ -776,7 +776,7 @@ async fn main() -> Result<()> {
                     output_format,
                 } => {
                     let lifecycle_manager = create_lifecycle_manager(plugin_dir.clone()).await?;
-                    
+
                     // Prompt for confirmation if showing values
                     if *show_values && !*yes {
                         print!("Show secret values? [y/N]: ");
@@ -788,28 +788,41 @@ async fn main() -> Result<()> {
                             return Ok(());
                         }
                     }
-                    
-                    let secrets = lifecycle_manager.list_component_secrets(component_id, *show_values).await?;
-                    
+
+                    let secrets = lifecycle_manager
+                        .list_component_secrets(component_id, *show_values)
+                        .await?;
+
                     let result = if *show_values {
-                        secrets.into_iter().map(|(k, v)| {
-                            json!({
-                                "key": k,
-                                "value": v.unwrap_or_else(|| "<not found>".to_string())
+                        secrets
+                            .into_iter()
+                            .map(|(k, v)| {
+                                json!({
+                                    "key": k,
+                                    "value": v.unwrap_or_else(|| "<not found>".to_string())
+                                })
                             })
-                        }).collect::<Vec<_>>()
+                            .collect::<Vec<_>>()
                     } else {
-                        secrets.into_keys().map(|k| json!({"key": k})).collect::<Vec<_>>()
+                        secrets
+                            .into_keys()
+                            .map(|k| json!({"key": k}))
+                            .collect::<Vec<_>>()
                     };
-                    
-                    print_result(&rmcp::model::CallToolResult {
-                        content: Some(vec![rmcp::model::Content::text(serde_json::to_string_pretty(&json!({
-                            "component_id": component_id,
-                            "secrets": result
-                        }))?)]),
-                        structured_content: None,
-                        is_error: None,
-                    }, *output_format)?;
+
+                    print_result(
+                        &rmcp::model::CallToolResult {
+                            content: Some(vec![rmcp::model::Content::text(
+                                serde_json::to_string_pretty(&json!({
+                                    "component_id": component_id,
+                                    "secrets": result
+                                }))?,
+                            )]),
+                            structured_content: None,
+                            is_error: None,
+                        },
+                        *output_format,
+                    )?;
                 }
                 SecretCommands::Set {
                     component_id,
@@ -817,19 +830,26 @@ async fn main() -> Result<()> {
                     plugin_dir,
                 } => {
                     let lifecycle_manager = create_lifecycle_manager(plugin_dir.clone()).await?;
-                    lifecycle_manager.set_component_secrets(component_id, secrets).await?;
-                    
+                    lifecycle_manager
+                        .set_component_secrets(component_id, secrets)
+                        .await?;
+
                     let result = json!({
                         "status": "success",
                         "component_id": component_id,
                         "message": format!("Set {} secret(s) for component", secrets.len())
                     });
-                    
-                    print_result(&rmcp::model::CallToolResult {
-                        content: Some(vec![rmcp::model::Content::text(serde_json::to_string_pretty(&result)?)]),
-                        structured_content: None,
-                        is_error: None,
-                    }, OutputFormat::Json)?;
+
+                    print_result(
+                        &rmcp::model::CallToolResult {
+                            content: Some(vec![rmcp::model::Content::text(
+                                serde_json::to_string_pretty(&result)?,
+                            )]),
+                            structured_content: None,
+                            is_error: None,
+                        },
+                        OutputFormat::Json,
+                    )?;
                 }
                 SecretCommands::Delete {
                     component_id,
@@ -837,19 +857,26 @@ async fn main() -> Result<()> {
                     plugin_dir,
                 } => {
                     let lifecycle_manager = create_lifecycle_manager(plugin_dir.clone()).await?;
-                    lifecycle_manager.delete_component_secrets(component_id, keys).await?;
-                    
+                    lifecycle_manager
+                        .delete_component_secrets(component_id, keys)
+                        .await?;
+
                     let result = json!({
                         "status": "success",
                         "component_id": component_id,
                         "message": format!("Deleted {} secret(s) from component", keys.len())
                     });
-                    
-                    print_result(&rmcp::model::CallToolResult {
-                        content: Some(vec![rmcp::model::Content::text(serde_json::to_string_pretty(&result)?)]),
-                        structured_content: None,
-                        is_error: None,
-                    }, OutputFormat::Json)?;
+
+                    print_result(
+                        &rmcp::model::CallToolResult {
+                            content: Some(vec![rmcp::model::Content::text(
+                                serde_json::to_string_pretty(&result)?,
+                            )]),
+                            structured_content: None,
+                            is_error: None,
+                        },
+                        OutputFormat::Json,
+                    )?;
                 }
             },
         },
