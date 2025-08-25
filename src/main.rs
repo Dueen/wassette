@@ -39,7 +39,7 @@ mod format;
 
 use commands::{
     Cli, Commands, ComponentCommands, GrantPermissionCommands, PermissionCommands, PolicyCommands,
-    RevokePermissionCommands, Serve,
+    RevokePermissionCommands, SecretCommands, Serve,
 };
 use format::{print_result, OutputFormat};
 
@@ -253,6 +253,10 @@ async fn create_lifecycle_manager(plugin_dir: Option<PathBuf>) -> Result<Lifecyc
     let config = if let Some(dir) = plugin_dir {
         config::Config {
             plugin_dir: dir,
+            secrets_dir: config::get_secrets_dir().unwrap_or_else(|_| {
+                eprintln!("WARN: Unable to determine default secrets directory, using `secrets` directory in the current working directory");
+                PathBuf::from("./secrets")
+            }),
             environment_vars: std::collections::HashMap::new(),
         }
     } else {

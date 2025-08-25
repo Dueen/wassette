@@ -16,6 +16,7 @@ use component2json::{
     component_exports_to_json_schema, component_exports_to_tools, create_placeholder_results,
     json_to_vals, vals_to_json, FunctionIdentifier, ToolMetadata,
 };
+use etcetera::BaseStrategy;
 use policy::PolicyParser;
 use serde_json::Value;
 use tokio::fs::DirEntry;
@@ -28,18 +29,32 @@ use wasmtime_wasi_config::WasiConfig;
 mod http;
 mod loader;
 mod policy_internal;
+mod secrets;
 mod wasistate;
 
 pub use http::WassetteWasiState;
 use loader::{ComponentResource, PolicyResource};
 use policy_internal::PolicyRegistry;
 pub use policy_internal::{PermissionGrantRequest, PermissionRule, PolicyInfo};
+pub use secrets::SecretsManager;
 use wasistate::WasiState;
 pub use wasistate::{
     create_wasi_state_template_from_policy, CustomResourceLimiter, WasiStateTemplate,
 };
 
 const DOWNLOADS_DIR: &str = "downloads";
+
+/// Get the default secrets directory path based on the OS
+fn get_default_secrets_dir() -> PathBuf {
+    let dir_strategy = etcetera::choose_base_strategy();
+    match dir_strategy {
+        Ok(strategy) => strategy.config_dir().join("wassette").join("secrets"),
+        Err(_) => {
+            eprintln!("WARN: Unable to determine default secrets directory, using `secrets` directory in the current working directory");
+            PathBuf::from("./secrets")
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ToolInfo {
@@ -134,6 +149,7 @@ pub struct LifecycleManager {
     http_client: reqwest::Client,
     plugin_dir: PathBuf,
     environment_vars: HashMap<String, String>,
+    secrets_manager: Arc<SecretsManager>,
 }
 
 /// A representation of a loaded component instance. It contains both the base component info and a
@@ -149,9 +165,13 @@ impl LifecycleManager {
     /// This is the primary way to create a LifecycleManager for most use cases
     #[instrument(skip_all, fields(plugin_dir = %plugin_dir.as_ref().display()))]
     pub async fn new(plugin_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::new_with_clients(
+        // Use default secrets directory for backward compatibility
+        let default_secrets_dir = get_default_secrets_dir();
+        
+        Self::new_with_config(
             plugin_dir,
             HashMap::new(), // Empty environment variables for backward compatibility
+            default_secrets_dir,
             oci_client::Client::default(),
             reqwest::Client::default(),
         )
@@ -164,11 +184,34 @@ impl LifecycleManager {
         plugin_dir: impl AsRef<Path>,
         environment_vars: HashMap<String, String>,
     ) -> Result<Self> {
-        Self::new_with_clients(
+        // Use default secrets directory
+        let default_secrets_dir = get_default_secrets_dir();
+        
+        Self::new_with_config(
             plugin_dir,
             environment_vars,
+            default_secrets_dir,
             oci_client::Client::default(),
             reqwest::Client::default(),
+        )
+        .await
+    }
+
+    /// Creates a lifecycle manager from full configuration
+    #[instrument(skip_all, fields(plugin_dir = %plugin_dir.as_ref().display()))]
+    pub async fn new_with_config(
+        plugin_dir: impl AsRef<Path>,
+        environment_vars: HashMap<String, String>,
+        secrets_dir: impl AsRef<Path>,
+        oci_client: oci_client::Client,
+        http_client: reqwest::Client,
+    ) -> Result<Self> {
+        Self::new_with_policy(
+            plugin_dir,
+            environment_vars,
+            secrets_dir,
+            oci_client,
+            http_client,
         )
         .await
     }
@@ -178,6 +221,28 @@ impl LifecycleManager {
     pub async fn new_with_clients(
         plugin_dir: impl AsRef<Path>,
         environment_vars: HashMap<String, String>,
+        oci_client: oci_client::Client,
+        http_client: reqwest::Client,
+    ) -> Result<Self> {
+        // Use default secrets directory for backward compatibility
+        let default_secrets_dir = get_default_secrets_dir();
+        
+        Self::new_with_policy(
+            plugin_dir,
+            environment_vars,
+            default_secrets_dir,
+            oci_client,
+            http_client,
+        )
+        .await
+    }
+
+    /// Creates a lifecycle manager with custom clients and WASI state template
+    #[instrument(skip_all)]
+    async fn new_with_policy(
+        plugin_dir: impl AsRef<Path>,
+        environment_vars: HashMap<String, String>,
+        secrets_dir: impl AsRef<Path>,
         oci_client: oci_client::Client,
         http_client: reqwest::Client,
     ) -> Result<Self> {
@@ -191,32 +256,16 @@ impl LifecycleManager {
         config.wasm_component_model(true);
         config.async_support(true);
         let engine = Arc::new(wasmtime::Engine::new(&config)?);
-
-        // Create the lifecycle manager
-        Self::new_with_policy(
-            engine,
-            components_dir,
-            environment_vars,
-            oci_client,
-            http_client,
-        )
-        .await
-    }
-
-    /// Creates a lifecycle manager with custom clients and WASI state template
-    #[instrument(skip_all)]
-    async fn new_with_policy(
-        engine: Arc<Engine>,
-        plugin_dir: impl AsRef<Path>,
-        environment_vars: HashMap<String, String>,
-        oci_client: oci_client::Client,
-        http_client: reqwest::Client,
-    ) -> Result<Self> {
+        
         info!("Creating new LifecycleManager");
 
         let mut registry = ComponentRegistry::new();
         let mut components = HashMap::new();
         let mut policy_registry = PolicyRegistry::default();
+
+        // Create secrets manager
+        let secrets_manager = Arc::new(SecretsManager::new(secrets_dir.as_ref().to_path_buf()));
+        secrets_manager.ensure_secrets_dir().await?;
 
         let mut linker = Linker::new(engine.as_ref());
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
@@ -252,6 +301,7 @@ impl LifecycleManager {
                                 &policy,
                                 plugin_dir.as_ref(),
                                 &environment_vars,
+                                None, // No secrets during initial loading
                             ) {
                                 Ok(wasi_template) => {
                                     policy_registry
@@ -294,6 +344,7 @@ impl LifecycleManager {
             http_client,
             plugin_dir: plugin_dir.as_ref().to_path_buf(),
             environment_vars,
+            secrets_manager,
         })
     }
 
@@ -672,6 +723,31 @@ impl LifecycleManager {
         }
         Ok(())
     }
+
+    /// Get the secrets manager
+    pub fn secrets_manager(&self) -> &SecretsManager {
+        &self.secrets_manager
+    }
+
+    /// List secrets for a component
+    pub async fn list_component_secrets(&self, component_id: &str, show_values: bool) -> Result<std::collections::HashMap<String, Option<String>>> {
+        self.secrets_manager.list_component_secrets(component_id, show_values).await
+    }
+
+    /// Set secrets for a component
+    pub async fn set_component_secrets(&self, component_id: &str, secrets: &[(String, String)]) -> Result<()> {
+        self.secrets_manager.set_component_secrets(component_id, secrets).await
+    }
+
+    /// Delete secrets for a component
+    pub async fn delete_component_secrets(&self, component_id: &str, keys: &[String]) -> Result<()> {
+        self.secrets_manager.delete_component_secrets(component_id, keys).await
+    }
+
+    /// Load secrets for a component as environment variables
+    pub async fn load_component_secrets(&self, component_id: &str) -> Result<std::collections::HashMap<String, String>> {
+        self.secrets_manager.load_component_secrets(component_id).await
+    }
 }
 
 async fn load_component_from_entry(
@@ -1049,7 +1125,7 @@ permissions:
 
         let temp_dir = tempfile::tempdir()?;
         let env_vars = HashMap::new(); // Empty environment for test
-        let template = create_wasi_state_template_from_policy(&policy, temp_dir.path(), &env_vars)?;
+        let template = create_wasi_state_template_from_policy(&policy, temp_dir.path(), &env_vars, None)?;
 
         assert_eq!(template.allowed_hosts.len(), 2);
         assert!(template.allowed_hosts.contains("api.example.com"));
