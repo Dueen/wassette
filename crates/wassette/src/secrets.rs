@@ -10,13 +10,11 @@
 //! - Integrated with component environment variable system
 
 use std::collections::HashMap;
-use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -262,8 +260,11 @@ fn sanitize_component_id(component_id: &str) -> String {
         }
     }
 
-    // Trim trailing underscore
-    if result.ends_with('_') {
+    // Trim leading and trailing underscores
+    while result.starts_with('_') {
+        result.remove(0);
+    }
+    while result.ends_with('_') {
         result.pop();
     }
 
@@ -364,6 +365,10 @@ mod tests {
 
         // Modify secrets directly
         let secrets_path = manager.get_component_secrets_path("test");
+        
+        // Sleep to ensure mtime changes
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        
         let new_content = "KEY1: value2\nKEY2: value3\n";
         tokio::fs::write(&secrets_path, new_content).await?;
 
@@ -371,6 +376,58 @@ mod tests {
         let loaded2 = manager.load_component_secrets("test").await?;
         assert_eq!(loaded2.get("KEY1"), Some(&"value2".to_string()));
         assert_eq!(loaded2.get("KEY2"), Some(&"value3".to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_secrets_with_environment_precedence() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let secrets_dir = temp_dir.path().join("secrets");
+        let manager = SecretsManager::new(secrets_dir);
+
+        // Set secrets
+        let secrets = vec![
+            ("SECRET_KEY".to_string(), "from_secrets".to_string()),
+            ("ONLY_IN_SECRETS".to_string(), "secret_value".to_string()),
+        ];
+        manager.set_component_secrets("test", &secrets).await?;
+
+        // Test environment precedence using extract_env_vars function
+        use crate::wasistate::extract_env_vars;
+        use policy::PolicyParser;
+        
+        let yaml_content = r#"
+version: "1.0"
+description: "Test policy"
+permissions:
+  environment:
+    allow:
+      - key: "SECRET_KEY"
+      - key: "ONLY_IN_SECRETS" 
+      - key: "ONLY_IN_ENV"
+"#;
+        let policy = PolicyParser::parse_str(yaml_content)?;
+        
+        // Environment vars (highest precedence)
+        let mut env_vars = std::collections::HashMap::new();
+        env_vars.insert("SECRET_KEY".to_string(), "from_env".to_string());
+        env_vars.insert("ONLY_IN_ENV".to_string(), "env_value".to_string());
+        
+        // Load secrets
+        let loaded_secrets = manager.load_component_secrets("test").await?;
+        
+        // Test precedence
+        let result = extract_env_vars(&policy, &env_vars, Some(&loaded_secrets))?;
+        
+        // SECRET_KEY should come from env (highest precedence)
+        assert_eq!(result.get("SECRET_KEY"), Some(&"from_env".to_string()));
+        
+        // ONLY_IN_SECRETS should come from secrets
+        assert_eq!(result.get("ONLY_IN_SECRETS"), Some(&"secret_value".to_string()));
+        
+        // ONLY_IN_ENV should come from env
+        assert_eq!(result.get("ONLY_IN_ENV"), Some(&"env_value".to_string()));
 
         Ok(())
     }
